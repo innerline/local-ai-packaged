@@ -1,0 +1,13 @@
+[default]
+model = "qwen2.5:7b-instruct-q4_K_M"
+model_provider = "ollama"
+
+[providers.ollama]
+name = "Ollama"
+base_url = "http://localhost:11434/v1"
+env_key = "OLLAMA_API_KEY"
+
+[history]
+max_size = 1000
+save_history = true
+sensitive_patterns = []

@@ -29,6 +29,8 @@ services:
   langfuse-web:
     ports:
       - 127.0.0.1:3000:3000
+    environment:
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@supabase-db:5432/postgres
 
   clickhouse:
     ports:
@@ -41,9 +43,7 @@ services:
       - 127.0.0.1:9010:9000
       - 127.0.0.1:9011:9001
 
-  postgres:
-    ports:
-      - 127.0.0.1:5433:5432                
+  # postgres service removed - using supabase-db instead
 
   redis:
     ports:

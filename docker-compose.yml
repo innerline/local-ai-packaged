@@ -173,7 +173,7 @@ services:
     image: langfuse/langfuse-worker:3
     restart: always
     depends_on: &langfuse-depends-on
-      postgres:
+      db:
         condition: service_healthy
       minio:
         condition: service_healthy
@@ -184,7 +184,7 @@ services:
     expose:
      - 3030/tcp
     environment: &langfuse-worker-env
-      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@postgres:5432/postgres
+      DATABASE_URL: postgresql://postgres:${POSTGRES_PASSWORD}@db:5432/langfuse
       SALT: ${LANGFUSE_SALT}
       ENCRYPTION_KEY: ${ENCRYPTION_KEY}
       TELEMETRY_ENABLED: ${TELEMETRY_ENABLED:-true}
@@ -290,23 +290,7 @@ services:
       retries: 5
       start_period: 1s
 
-  postgres:
-    image: postgres:${POSTGRES_VERSION:-latest}
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 3s
-      timeout: 3s
-      retries: 10
-    expose:
-      - 5432/tcp
-    environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: postgres
-    volumes:
-      - langfuse_postgres_data:/var/lib/postgresql/data
-
+  # postgres service removed - using supabase-db instead
   redis:
     container_name: redis
     image: docker.io/valkey/valkey:8-alpine
