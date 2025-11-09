@@ -14,11 +14,27 @@ import time
 import argparse
 import platform
 import sys
+import yaml
 
-def run_command(cmd, cwd=None):
+def run_command(cmd, cwd=None, description=None):
     """Run a shell command and print it."""
+    if description:
+        print(f"Action: {description}")
     print("Running:", " ".join(cmd))
-    subprocess.run(cmd, cwd=cwd, check=True)
+    try:
+        result = subprocess.run(cmd, cwd=cwd, check=True, capture_output=True, text=True)
+        if result.stdout:
+            print("Output:", result.stdout)
+        return result
+    except subprocess.CalledProcessError as e:
+        print("Error occurred:")
+        print("Return code:", e.returncode)
+        print("Command:", e.cmd)
+        if e.stdout:
+            print("STDOUT:", e.stdout)
+        if e.stderr:
+            print("STDERR:", e.stderr)
+        raise
 
 def clone_supabase_repo():
     """Clone the Supabase repository using sparse checkout if not already present."""
@@ -46,13 +62,96 @@ def prepare_supabase_env():
     print("Copying .env in root to .env in supabase/docker...")
     shutil.copyfile(env_example_path, env_path)
 
+def check_existing_containers():
+    """Check for existing containers that might conflict."""
+    print("=== Checking for existing containers ===")
+    try:
+        # Check all containers in the localai project
+        result = run_command([
+            "docker", "ps", "-a", "--filter", "name=localai", "--format",
+            "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+        ], description="List existing localai containers")
+        
+        # Check specifically for n8n containers
+        n8n_result = run_command([
+            "docker", "ps", "-a", "--filter", "name=n8n", "--format",
+            "table {{.Names}}\t{{.Status}}\t{{.Image}}"
+        ], description="List existing n8n containers")
+        
+        # Check for any containers using the same ports
+        print("\n=== Checking for port conflicts ===")
+        port_check = run_command([
+            "docker", "ps", "--filter", "publish=5678", "--format",
+            "table {{.Names}}\t{{.Status}}\t{{.Ports}}"
+        ], description="Check for port 5678 usage (n8n default)")
+        
+    except Exception as e:
+        print(f"Note: Could not fully check existing containers: {e}")
+    
+    print("=== End container check ===\n")
+
+def cleanup_stray_containers():
+    """Clean up any stray containers that might conflict."""
+    print("=== Cleaning up stray containers ===")
+    try:
+        # Specifically look for and remove any n8n containers that might be lingering
+        result = run_command([
+            "docker", "ps", "-a", "--filter", "name=n8n", "--format", "{{.Names}}"
+        ], description="Find all n8n containers")
+        
+        n8n_containers = result.stdout.strip().split('\n') if result.stdout else []
+        n8n_containers = [c for c in n8n_containers if c]
+        
+        if n8n_containers:
+            print(f"Found existing n8n containers: {n8n_containers}")
+            for container in n8n_containers:
+                print(f"Removing container: {container}")
+                run_command([
+                    "docker", "rm", "-f", container
+                ], description=f"Force remove {container}")
+        else:
+            print("No existing n8n containers found")
+            
+        # Also check for any other containers that might conflict
+        print("\n=== Checking for other potential conflicts ===")
+        conflicting_containers = [
+            "ollama", "flowise", "qdrant", "searxng", "redis",
+            "clickhouse", "minio", "langfuse-web", "langfuse-worker"
+        ]
+        
+        for container_name in conflicting_containers:
+            try:
+                result = run_command([
+                    "docker", "inspect", "--format={{.State.Running}}", container_name
+                ], description=f"Check if {container_name} is running", check=False)
+                
+                if result.returncode == 0 and "true" in result.stdout:
+                    print(f"Found running {container_name} container")
+                    run_command([
+                        "docker", "rm", "-f", container_name
+                    ], description=f"Remove conflicting {container_name} container")
+            except:
+                pass  # Container doesn't exist, which is fine
+                
+    except Exception as e:
+        print(f"Note: Error during container cleanup: {e}")
+    
+    print("=== End container cleanup ===\n")
+
 def stop_existing_containers(profile=None):
     print("Stopping and removing existing containers for the unified project 'localai'...")
     cmd = ["docker", "compose", "-p", "localai"]
     if profile and profile != "none":
         cmd.extend(["--profile", profile])
     cmd.extend(["-f", "docker-compose.yml", "down"])
-    run_command(cmd)
+    try:
+        run_command(cmd, description="Stop and remove localai containers")
+    except subprocess.CalledProcessError as e:
+        print("Standard docker compose down failed, trying aggressive cleanup...")
+        # If standard cleanup fails, try a more aggressive approach
+        cleanup_stray_containers()
+        # Try again
+        run_command(cmd, description="Retry stop and remove localai containers")
 
 def start_supabase(environment=None):
     """Start the Supabase services (using its compose file)."""
@@ -61,7 +160,63 @@ def start_supabase(environment=None):
     if environment and environment == "public":
         cmd.extend(["-f", "docker-compose.override.public.supabase.yml"])
     cmd.extend(["up", "-d"])
-    run_command(cmd)
+    run_command(cmd, description="Start Supabase services")
+
+def comprehensive_cleanup():
+    """Perform a comprehensive cleanup of all possible conflicting containers."""
+    print("=== Starting comprehensive container cleanup ===")
+    
+    # List of all possible container names from both compose files
+    all_containers = [
+        # Main compose file containers
+        "localai-flowise-1", "localai-open-webui-1", "localai-n8n-1",
+        "localai-n8n-import-1", "localai-qdrant-1", "localai-neo4j-1",
+        "localai-caddy-1", "localai-langfuse-worker-1", "localai-langfuse-web-1",
+        "localai-clickhouse-1", "localai-minio-1", "localai-redis-1",
+        "localai-searxng-1", "localai-ollama-cpu-1", "localai-ollama-gpu-1",
+        "localai-ollama-gpu-amd-1", "localai-ollama-pull-llama-cpu-1",
+        "localai-ollama-pull-llama-gpu-1", "localai-ollama-pull-llama-gpu-amd-1",
+        
+        # Supabase containers
+        "supabase-studio-1", "supabase-kong-1", "supabase-auth-1",
+        "supabase-rest-1", "realtime-dev.supabase-realtime-1", "supabase-storage-1",
+        "supabase-imgproxy-1", "supabase-meta-1", "supabase-edge-functions-1",
+        "supabase-analytics-1", "supabase-db-1", "supabase-vector-1",
+        "supabase-pooler-1", "supabase-mail-1",
+        
+        # Old hard-coded names (for legacy cleanup)
+        "n8n", "ollama", "ollama-pull-llama", "flowise", "open-webui",
+        "qdrant", "caddy", "redis", "searxng"
+    ]
+    
+    removed_count = 0
+    for container in all_containers:
+        try:
+            # Check if container exists
+            result = run_command([
+                "docker", "inspect", "--format={{.Name}}", container
+            ], description=f"Check if {container} exists", check=False)
+            
+            if result.returncode == 0:
+                print(f"Found container: {container}")
+                # Force remove the container
+                run_command([
+                    "docker", "rm", "-f", container
+                ], description=f"Remove container {container}")
+                removed_count += 1
+                
+        except Exception as e:
+            print(f"Note: Could not process {container}: {e}")
+    
+    print(f"=== Cleanup completed. Removed {removed_count} containers ===\n")
+    
+    # Clean up any unused networks
+    try:
+        run_command([
+            "docker", "network", "prune", "-f"
+        ], description="Clean up unused Docker networks")
+    except:
+        pass  # Network cleanup is optional
 
 def start_local_ai(profile=None, environment=None):
     """Start the local AI services (using its compose file)."""
@@ -75,7 +230,13 @@ def start_local_ai(profile=None, environment=None):
     if environment and environment == "public":
         cmd.extend(["-f", "docker-compose.override.public.yml"])
     cmd.extend(["up", "-d"])
-    run_command(cmd)
+    try:
+        run_command(cmd, description="Start local AI services")
+    except subprocess.CalledProcessError as e:
+        print("Failed to start services. Attempting comprehensive cleanup and retry...")
+        comprehensive_cleanup()
+        print("Retrying service startup...")
+        run_command(cmd, description="Retry start local AI services")
 
 def generate_searxng_secret_key():
     """Generate a secret key for SearXNG based on the current platform."""
@@ -232,6 +393,9 @@ def main():
     generate_searxng_secret_key()
     check_and_fix_docker_compose_for_searxng()
 
+    # Check for existing containers before stopping
+    check_existing_containers()
+    
     stop_existing_containers(args.profile)
 
     # Start Supabase first
